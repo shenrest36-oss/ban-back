@@ -17,6 +17,28 @@ function billNo(dateSlotId) {
   return `BNQ-${dateSlotId}-${Date.now().toString(36).toUpperCase()}`;
 }
 
+async function buildPreparedEntries(entries, eventDate, taxFn = calculateTax) {
+  return Promise.all(entries.map(async (entry) => {
+    if (entry.isComp) {
+      return {
+        ...entry,
+        charge: 0,
+        taxAmount: 0,
+        chargeWithTax: 0,
+      };
+    }
+
+    const tax = await taxFn(entry.baseCharge, eventDate);
+
+    return {
+      ...entry,
+      charge: entry.baseCharge,
+      taxAmount: tax.taxAmount,
+      chargeWithTax: tax.chargeWithTax,
+    };
+  }));
+}
+
 // ─── POST /api/banquet/date-slots/:id/generate-bill ──────────────────────────
 //
 // Creates GuestBillLine rows for all charges on the date slot.
@@ -106,21 +128,11 @@ reservation: true,
       });
     }
 
-    // Compute tax and create bill lines in a single transaction
+    const preparedEntries = await buildPreparedEntries(entries, eventDate);
+
     const createdLines = await prisma.$transaction(async (tx) => {
       const lines = [];
-      for (const entry of entries) {
-        let charge, taxAmount, chargeWithTax;
-        if (entry.isComp) {
-          // Complementary: zero billing, line still created for audit
-          charge = 0; taxAmount = 0; chargeWithTax = 0;
-        } else {
-          const tax = await calculateTax(entry.baseCharge, eventDate);
-          charge       = entry.baseCharge;
-          taxAmount    = tax.taxAmount;
-          chargeWithTax = tax.chargeWithTax;
-        }
-
+      for (const entry of preparedEntries) {
         const line = await tx.guestBillLine.create({
           data: {
             reservationId: slot.reservationId,
@@ -128,9 +140,9 @@ reservation: true,
             billNo: no,
             lineType: entry.lineType,
             description: entry.description,
-            charge,
-            taxAmount,
-            chargeWithTax,
+            charge: entry.charge,
+            taxAmount: entry.taxAmount,
+            chargeWithTax: entry.chargeWithTax,
             fromPms: false,
             insertDate: new Date(eventDate.toISOString().slice(0, 10) + 'T00:00:00.000Z'),
             userId: req.user.id,
@@ -147,7 +159,7 @@ reservation: true,
         lines.push(line);
       }
       return lines;
-    });
+    }, { timeout: 20000 });
 
     res.status(201).json({
       billNo: no,
@@ -207,20 +219,17 @@ router.post('/:id/regenerate-bill', async (req, res) => {
       ...slot.requestedMenuItems.map(rm => ({ lineType: 'menu', description: `${rm.menu.name} × ${rm.guestCount} covers`, baseCharge: Number(rm.charge), isComp: isCompReservation || rm.isComplementary })),
     ];
 
+    const preparedEntries = await buildPreparedEntries(entries, eventDate);
+
     const createdLines = await prisma.$transaction(async (tx) => {
       const lines = [];
-      for (const entry of entries) {
-        let charge = 0, taxAmount = 0, chargeWithTax = 0;
-        if (!entry.isComp) {
-          const tax = await calculateTax(entry.baseCharge, eventDate);
-          charge = entry.baseCharge; taxAmount = tax.taxAmount; chargeWithTax = tax.chargeWithTax;
-        }
+      for (const entry of preparedEntries) {
         lines.push(await tx.guestBillLine.create({
-          data: { reservationId: slot.reservationId, dateSlotId, billNo: no, lineType: entry.lineType, description: entry.description, charge, taxAmount, chargeWithTax, fromPms: false, insertDate: new Date(eventDate.toISOString().slice(0, 10) + 'T00:00:00.000Z'), userId: req.user.id },
+          data: { reservationId: slot.reservationId, dateSlotId, billNo: no, lineType: entry.lineType, description: entry.description, charge: entry.charge, taxAmount: entry.taxAmount, chargeWithTax: entry.chargeWithTax, fromPms: false, insertDate: new Date(eventDate.toISOString().slice(0, 10) + 'T00:00:00.000Z'), userId: req.user.id },
         }));
       }
       return lines;
-    });
+    }, { timeout: 20000 });
 
     res.status(201).json({
       billNo: no,
@@ -598,3 +607,4 @@ router.delete('/deposits/:id', async (req, res) => {
 });
 
 module.exports = router;
+module.exports.buildPreparedEntries = buildPreparedEntries;
