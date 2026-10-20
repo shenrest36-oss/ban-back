@@ -30,13 +30,15 @@ router.post('/:id/generate-bill', async (req, res) => {
     const slot = await prisma.banquetDateSlot.findUnique({
       where: { id: dateSlotId },
       include: {
-        reservation: true,
-        requestedItems:     { include: { item: true } },
-        requestedMenuItems: { include: { menu: true } },
-        guestBillLines: { select: { id: true } },
+reservation: true,
+    partition: { include: { hall: true } },
+    requestedItems:     { include: { item: true } },
+    requestedMenuItems: { include: { menu: true } },
+    guestBillLines: { select: { id: true } },
       },
     });
     if (!slot) return res.status(404).json({ error: 'Date slot not found' });
+    if (!slot.reservation) return res.status(404).json({ error: 'Reservation not found for this date slot' });
 
     // Guard: already billed — do not double-create
     if (slot.guestBillLines.length > 0) {
@@ -158,8 +160,8 @@ router.post('/:id/generate-bill', async (req, res) => {
       },
     });
   } catch (e) {
-    console.error(e);
-    res.status(500).json({ error: 'Failed to generate bill' });
+    console.error('generate-bill error:', e && e.stack ? e.stack : e);
+    res.status(500).json({ error: 'Failed to generate bill', detail: e && e.message ? e.message : String(e) });
   }
 });
 
@@ -231,7 +233,7 @@ router.post('/:id/regenerate-bill', async (req, res) => {
         lineCount:       createdLines.length,
       },
     });
-  } catch (e) { console.error(e); res.status(500).json({ error: 'Failed to regenerate bill' }); }
+  } catch (e) { console.error('regenerate-bill error:', e && e.stack ? e.stack : e); res.status(500).json({ error: 'Failed to regenerate bill', detail: e && e.message ? e.message : String(e) }); }
 });
 
 // ─── GET /api/banquet/reservations/:id/folio ────────────────────────────────

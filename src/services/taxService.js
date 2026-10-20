@@ -37,42 +37,56 @@ async function getEllaConnection() {
  * Uses active tax_config rows covering chargeDate.
  */
 async function calculateTax(chargeAmount, chargeDate) {
-  const conn = await getEllaConnection();
-  const dateStr = chargeDate instanceof Date
-    ? chargeDate.toISOString().slice(0, 10)
-    : String(chargeDate).slice(0, 10);
+  const base = Number(chargeAmount ?? 0);
 
-  const [configs] = await conn.query(
-    `SELECT tax_type, rate, compound_on FROM tax_config
-     WHERE effective_from <= ? AND effective_to >= ?
-     ORDER BY tax_type`,
-    [dateStr, dateStr]
-  );
+  try {
+    const conn = await getEllaConnection();
+    const dateStr = chargeDate instanceof Date
+      ? chargeDate.toISOString().slice(0, 10)
+      : String(chargeDate).slice(0, 10);
 
-  const base    = Number(chargeAmount);
-  const scConfig = configs.find(c => c.tax_type === 'SC');
-  const scAmount = scConfig ? Number(((scConfig.rate / 100) * base).toFixed(2)) : 0;
+    const [configs] = await conn.query(
+      `SELECT tax_type, rate, compound_on FROM tax_config
+       WHERE effective_from <= ? AND effective_to >= ?
+       ORDER BY tax_type`,
+      [dateStr, dateStr]
+    );
 
-  const breakdown = [];
-  let totalTax = 0;
-
-  for (const cfg of configs) {
-    let taxable = base;
-    if (cfg.tax_type === 'VAT' && cfg.compound_on === 'room_revenue_plus_sc') {
-      taxable = base + scAmount;
+    if (!configs || configs.length === 0) {
+      return { taxAmount: 0, chargeWithTax: Number(base.toFixed(2)), breakdown: [] };
     }
-    const amount = Number(((cfg.rate / 100) * taxable).toFixed(2));
-    breakdown.push({ taxType: cfg.tax_type, rate: cfg.rate, amount });
-    totalTax += amount;
+
+    const scConfig = configs.find(c => c.tax_type === 'SC');
+    const scAmount = scConfig ? Number(((scConfig.rate / 100) * base).toFixed(2)) : 0;
+
+    const breakdown = [];
+    let totalTax = 0;
+
+    for (const cfg of configs) {
+      let taxable = base;
+      if (cfg.tax_type === 'VAT' && cfg.compound_on === 'room_revenue_plus_sc') {
+        taxable = base + scAmount;
+      }
+      const amount = Number(((cfg.rate / 100) * taxable).toFixed(2));
+      breakdown.push({ taxType: cfg.tax_type, rate: cfg.rate, amount });
+      totalTax += amount;
+    }
+
+    totalTax = Number(totalTax.toFixed(2));
+
+    return {
+      taxAmount:     totalTax,
+      chargeWithTax: Number((base + totalTax).toFixed(2)),
+      breakdown,
+    };
+  } catch (error) {
+    console.warn('PMS tax config unavailable; defaulting to zero tax for bill generation.', error.message);
+    return {
+      taxAmount: 0,
+      chargeWithTax: Number(base.toFixed(2)),
+      breakdown: [],
+    };
   }
-
-  totalTax = Number(totalTax.toFixed(2));
-
-  return {
-    taxAmount:     totalTax,
-    chargeWithTax: Number((base + totalTax).toFixed(2)),
-    breakdown,
-  };
 }
 
 module.exports = { calculateTax };
